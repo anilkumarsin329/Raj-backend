@@ -20,40 +20,77 @@ if (process.env.NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }
 
-// CORS — supports Vercel + Render production URLs via env
+// CORS — normalize origins; set FRONTEND_URL + ALLOWED_ORIGINS on Render
+const normalizeOrigin = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const trimmed = url.trim();
+    if (!trimmed) return null;
+    return new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`).origin;
+  } catch {
+    return null;
+  }
+};
+
 const getAllowedOrigins = () => {
   const fromEnv = [
     process.env.FRONTEND_URL,
     process.env.FRONTEND_URL_2,
     process.env.FRONTEND_URL_3,
-    ...(process.env.ALLOWED_ORIGINS?.split(',').map((o) => o.trim()) || []),
-  ].filter(Boolean);
+    ...(process.env.ALLOWED_ORIGINS?.split(',') || []),
+  ];
 
-  if (process.env.NODE_ENV === 'production') {
-    return fromEnv;
+  const origins = new Set(
+    fromEnv.map(normalizeOrigin).filter(Boolean)
+  );
+
+  if (process.env.NODE_ENV !== 'production') {
+    [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://127.0.0.1:5173',
+    ].forEach((o) => origins.add(o));
   }
 
-  return [
-    ...fromEnv,
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://127.0.0.1:5173',
-  ];
+  return [...origins];
 };
 
 const allowedOrigins = getAllowedOrigins();
 
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return false;
+  if (allowedOrigins.includes(normalized)) return true;
+  // Allow all Vercel deployments (production + preview URLs)
+  if (process.env.ALLOW_VERCEL_ORIGINS !== 'false') {
+    try {
+      const { hostname } = new URL(normalized);
+      if (hostname.endsWith('.vercel.app')) return true;
+    } catch {
+      /* ignore */
+    }
+  }
+  return false;
+};
+
+if (process.env.NODE_ENV === 'production') {
+  console.log('🌐 CORS allowed origins:', allowedOrigins.length ? allowedOrigins : '(none from env — using .vercel.app only)');
+}
+
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
-      callback(new Error(`CORS blocked: ${origin}`));
+      console.warn('CORS blocked:', origin, '| configured:', allowedOrigins);
+      callback(null, false);
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 204,
 }));
 
 app.use(express.json());
